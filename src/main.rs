@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Reset SIGPIPE to default behavior so piping (e.g. `oxid graph | dot`) exits cleanly
@@ -458,6 +458,35 @@ fn provider_manager(working_dir: &str) -> ProviderManager {
     ProviderManager::new(cache_dir)
 }
 
+fn resolve_module_dir(config: &str) -> Result<PathBuf> {
+    let config_path = std::fs::canonicalize(config)
+        .with_context(|| format!("Failed to resolve configuration path: {}", config))?;
+
+    if config_path.is_file() {
+        config_path
+            .parent()
+            .map(Path::to_path_buf)
+            .context("Configuration file has no parent directory")
+    } else {
+        Ok(config_path)
+    }
+}
+
+fn engine_for_cli(cli: &Cli, provider_manager: Arc<ProviderManager>) -> Result<ResourceEngine> {
+    let module_dir = resolve_module_dir(&cli.config)?;
+    let cwd = std::env::current_dir().context("Failed to resolve current working directory")?;
+    let module_dir = module_dir.to_string_lossy().into_owned();
+    let cwd = cwd.to_string_lossy().into_owned();
+
+    Ok(ResourceEngine::with_paths(
+        provider_manager,
+        cli.parallelism,
+        module_dir.clone(),
+        module_dir,
+        cwd,
+    ))
+}
+
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 async fn cmd_init(cli: &Cli) -> Result<()> {
@@ -703,7 +732,7 @@ async fn cmd_plan(
         .context("No default workspace. Run 'oxid init' first.")?;
 
     let pm = Arc::new(provider_manager(&cli.working_dir));
-    let engine = ResourceEngine::new(pm, cli.parallelism);
+    let engine = engine_for_cli(cli, pm)?;
 
     let plan = engine
         .plan(&workspace, &*backend, &ws.id, refresh, targets, destroy)
@@ -772,7 +801,14 @@ async fn cmd_apply(cli: &Cli, targets: &[String], auto_approve: bool) -> Result<
         .context("No default workspace. Run 'oxid init' first.")?;
 
     let pm = Arc::new(provider_manager(&cli.working_dir));
-    let engine = ResourceEngine::new(pm, cli.parallelism);
+    let module_dir = resolve_module_dir(&cli.config)?
+        .to_string_lossy()
+        .into_owned();
+    let cwd = std::env::current_dir()
+        .context("Failed to resolve current working directory")?
+        .to_string_lossy()
+        .into_owned();
+    let engine = engine_for_cli(cli, pm)?;
 
     // Plan first
     let plan = engine
@@ -787,7 +823,7 @@ async fn cmd_apply(cli: &Cli, targets: &[String], auto_approve: bool) -> Result<
         // Still store outputs even when no resource changes
         if !workspace.outputs.is_empty() {
             let backend_arc: Arc<dyn StateBackend> = Arc::from(backend);
-            store_outputs(&workspace, &backend_arc, &ws.id).await;
+            store_outputs(&workspace, &backend_arc, &ws.id, &module_dir, &cwd).await;
         }
 
         return Ok(());
@@ -845,7 +881,7 @@ async fn cmd_apply(cli: &Cli, targets: &[String], auto_approve: bool) -> Result<
 
     // Evaluate and print outputs
     if !workspace.outputs.is_empty() && summary.failed == 0 {
-        store_outputs(&workspace, &backend_arc, &ws.id).await;
+        store_outputs(&workspace, &backend_arc, &ws.id, &module_dir, &cwd).await;
     }
 
     Ok(())
@@ -855,6 +891,8 @@ async fn store_outputs(
     workspace: &config::types::WorkspaceConfig,
     backend: &Arc<dyn StateBackend>,
     workspace_id: &str,
+    path_module: &str,
+    path_cwd: &str,
 ) {
     let resource_states: Arc<dashmap::DashMap<String, serde_json::Value>> =
         Arc::new(dashmap::DashMap::new());
@@ -874,7 +912,13 @@ async fn store_outputs(
 
     let var_defaults = executor::engine::build_variable_defaults(workspace);
     let eval_ctx =
-        executor::engine::EvalContext::with_states(var_defaults, Arc::clone(&resource_states));
+        executor::engine::EvalContext::with_states(var_defaults, Arc::clone(&resource_states))
+            .with_paths(
+                path_module.to_string(),
+                path_module.to_string(),
+                path_cwd.to_string(),
+                workspace_id.to_string(),
+            );
 
     println!();
     println!("{}:", "Outputs".bold());
@@ -1058,7 +1102,7 @@ async fn cmd_destroy(cli: &Cli, _targets: &[String], auto_approve: bool) -> Resu
     }
 
     let pm = Arc::new(provider_manager(&cli.working_dir));
-    let engine = ResourceEngine::new(pm, cli.parallelism);
+    let engine = engine_for_cli(cli, pm)?;
 
     let run_id = backend
         .start_run(&ws.id, "destroy", resource_count as i32)
@@ -1288,7 +1332,7 @@ async fn cmd_import(cli: &Cli, command: &ImportCommands) -> Result<()> {
                 ))?;
 
             let pm = Arc::new(provider_manager(&cli.working_dir));
-            let engine = ResourceEngine::new(pm, cli.parallelism);
+            let engine = engine_for_cli(cli, pm)?;
 
             // Use the provider's ImportResourceState RPC
             // For now, create a resource state entry with the provider ID
@@ -2013,7 +2057,7 @@ async fn cmd_blast_radius(
             .await?
             .context("No default workspace. Run 'oxid init' first.")?;
         let pm = Arc::new(provider_manager(&cli.working_dir));
-        let engine = ResourceEngine::new(pm, cli.parallelism);
+        let engine = engine_for_cli(cli, pm)?;
         let plan = engine
             .plan(&workspace, &**b, &ws.id, true, &[], false)
             .await?;
@@ -2366,7 +2410,7 @@ async fn cmd_drift(cli: &Cli, refresh: bool) -> Result<()> {
     if refresh {
         println!("{}", "Refreshing state from providers...".dimmed());
         let pm = Arc::new(provider_manager(&cli.working_dir));
-        let engine = ResourceEngine::new(pm, cli.parallelism);
+        let engine = engine_for_cli(cli, pm)?;
 
         // Initialize and configure providers (connect, get schema, configure with region/creds)
         engine.initialize_providers(&workspace).await?;
