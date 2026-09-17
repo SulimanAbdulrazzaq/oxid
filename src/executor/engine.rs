@@ -158,6 +158,7 @@ pub struct ResourceEngine {
     path_module: String,
     path_root: String,
     path_cwd: String,
+    workspace_name: String,
 }
 
 impl ResourceEngine {
@@ -167,16 +168,26 @@ impl ResourceEngine {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
 
-        Self::with_paths(provider_manager, parallelism, cwd.clone(), cwd.clone(), cwd)
+        Self::with_paths(
+            provider_manager,
+            parallelism,
+            cwd.clone(),
+            cwd.clone(),
+            cwd,
+            "default".to_string(),
+        )
     }
 
-    /// Create an engine with Terraform-compatible path expression values.
+    /// Create an engine with Terraform-compatible path and workspace expression values.
+    ///
+    /// `workspace_name` is the workspace name (such as `default`), not its state store id.
     pub fn with_paths(
         provider_manager: Arc<ProviderManager>,
         parallelism: usize,
         path_module: String,
         path_root: String,
         path_cwd: String,
+        workspace_name: String,
     ) -> Self {
         Self {
             provider_manager,
@@ -184,6 +195,7 @@ impl ResourceEngine {
             path_module,
             path_root,
             path_cwd,
+            workspace_name,
         }
     }
 
@@ -191,26 +203,21 @@ impl ResourceEngine {
         &self,
         var_defaults: HashMap<String, serde_json::Value>,
         resource_states: Arc<DashMap<String, serde_json::Value>>,
-        workspace_name: &str,
     ) -> EvalContext {
         EvalContext::with_states(var_defaults, resource_states).with_paths(
             self.path_module.clone(),
             self.path_root.clone(),
             self.path_cwd.clone(),
-            workspace_name.to_string(),
+            self.workspace_name.clone(),
         )
     }
 
-    fn context_plan_only(
-        &self,
-        var_defaults: HashMap<String, serde_json::Value>,
-        workspace_name: &str,
-    ) -> EvalContext {
+    fn context_plan_only(&self, var_defaults: HashMap<String, serde_json::Value>) -> EvalContext {
         EvalContext::plan_only(var_defaults).with_paths(
             self.path_module.clone(),
             self.path_root.clone(),
             self.path_cwd.clone(),
-            workspace_name.to_string(),
+            self.workspace_name.clone(),
         )
     }
 
@@ -345,11 +352,8 @@ impl ResourceEngine {
                     );
 
                     // Build eval context with count.index / each.key + existing resource states
-                    let mut eval_ctx = self.context_with_states(
-                        var_defaults.clone(),
-                        Arc::clone(&resource_states),
-                        workspace_id,
-                    );
+                    let mut eval_ctx = self
+                        .context_with_states(var_defaults.clone(), Arc::clone(&resource_states));
                     match index {
                         Some(crate::config::types::ResourceIndex::Count(i)) => {
                             eval_ctx.count_index = Some(*i)
@@ -524,11 +528,8 @@ impl ResourceEngine {
                         planned_count,
                         total_resources,
                     );
-                    let mut ds_eval_ctx = self.context_with_states(
-                        var_defaults.clone(),
-                        Arc::clone(&resource_states),
-                        workspace_id,
-                    );
+                    let mut ds_eval_ctx = self
+                        .context_with_states(var_defaults.clone(), Arc::clone(&resource_states));
                     match index {
                         Some(crate::config::types::ResourceIndex::Count(i)) => {
                             ds_eval_ctx.count_index = Some(*i);
@@ -696,6 +697,7 @@ impl ResourceEngine {
         let path_module = self.path_module.clone();
         let path_root = self.path_root.clone();
         let path_cwd = self.path_cwd.clone();
+        let workspace_name = self.workspace_name.clone();
         // Shared map of completed resource states for cross-resource reference resolution.
         // As each resource completes, its new state is inserted here so dependents can
         // resolve references like `aws_s3_bucket.public_scripts.id`.
@@ -724,6 +726,7 @@ impl ResourceEngine {
             let path_module = path_module.clone();
             let path_root = path_root.clone();
             let path_cwd = path_cwd.clone();
+            let workspace_name = workspace_name.clone();
 
             Box::pin(async move {
                 match node {
@@ -743,7 +746,7 @@ impl ResourceEngine {
                             path_module.clone(),
                             path_root.clone(),
                             path_cwd.clone(),
-                            ws_id.clone(),
+                            workspace_name.clone(),
                         );
                         match index {
                             Some(crate::config::types::ResourceIndex::Count(i)) => {
@@ -989,7 +992,7 @@ impl ResourceEngine {
                             path_module.clone(),
                             path_root.clone(),
                             path_cwd.clone(),
-                            ws_id.clone(),
+                            workspace_name.clone(),
                         );
                         match index {
                             Some(crate::config::types::ResourceIndex::Count(i)) => {
@@ -1118,6 +1121,7 @@ impl ResourceEngine {
         let path_module = self.path_module.clone();
         let path_root = self.path_root.clone();
         let path_cwd = self.path_cwd.clone();
+        let workspace_name = self.workspace_name.clone();
 
         self.initialize_providers(workspace).await?;
 
@@ -1129,6 +1133,7 @@ impl ResourceEngine {
             let path_module = path_module.clone();
             let path_root = path_root.clone();
             let path_cwd = path_cwd.clone();
+            let workspace_name = workspace_name.clone();
 
             Box::pin(async move {
                 match node {
@@ -1144,7 +1149,7 @@ impl ResourceEngine {
                             path_module.clone(),
                             path_root.clone(),
                             path_cwd.clone(),
-                            ws_id.clone(),
+                            workspace_name.clone(),
                         );
                         match index {
                             Some(crate::config::types::ResourceIndex::Count(i)) => {

@@ -472,7 +472,11 @@ fn resolve_module_dir(config: &str) -> Result<PathBuf> {
     }
 }
 
-fn engine_for_cli(cli: &Cli, provider_manager: Arc<ProviderManager>) -> Result<ResourceEngine> {
+fn engine_for_cli(
+    cli: &Cli,
+    provider_manager: Arc<ProviderManager>,
+    workspace_name: &str,
+) -> Result<ResourceEngine> {
     let module_dir = resolve_module_dir(&cli.config)?;
     let cwd = std::env::current_dir().context("Failed to resolve current working directory")?;
     let module_dir = module_dir.to_string_lossy().into_owned();
@@ -484,6 +488,7 @@ fn engine_for_cli(cli: &Cli, provider_manager: Arc<ProviderManager>) -> Result<R
         module_dir.clone(),
         module_dir,
         cwd,
+        workspace_name.to_string(),
     ))
 }
 
@@ -732,7 +737,7 @@ async fn cmd_plan(
         .context("No default workspace. Run 'oxid init' first.")?;
 
     let pm = Arc::new(provider_manager(&cli.working_dir));
-    let engine = engine_for_cli(cli, pm)?;
+    let engine = engine_for_cli(cli, pm, &ws.name)?;
 
     let plan = engine
         .plan(&workspace, &*backend, &ws.id, refresh, targets, destroy)
@@ -808,7 +813,7 @@ async fn cmd_apply(cli: &Cli, targets: &[String], auto_approve: bool) -> Result<
         .context("Failed to resolve current working directory")?
         .to_string_lossy()
         .into_owned();
-    let engine = engine_for_cli(cli, pm)?;
+    let engine = engine_for_cli(cli, pm, &ws.name)?;
 
     // Plan first
     let plan = engine
@@ -823,7 +828,15 @@ async fn cmd_apply(cli: &Cli, targets: &[String], auto_approve: bool) -> Result<
         // Still store outputs even when no resource changes
         if !workspace.outputs.is_empty() {
             let backend_arc: Arc<dyn StateBackend> = Arc::from(backend);
-            store_outputs(&workspace, &backend_arc, &ws.id, &module_dir, &cwd).await;
+            store_outputs(
+                &workspace,
+                &backend_arc,
+                &ws.id,
+                &ws.name,
+                &module_dir,
+                &cwd,
+            )
+            .await;
         }
 
         return Ok(());
@@ -881,7 +894,15 @@ async fn cmd_apply(cli: &Cli, targets: &[String], auto_approve: bool) -> Result<
 
     // Evaluate and print outputs
     if !workspace.outputs.is_empty() && summary.failed == 0 {
-        store_outputs(&workspace, &backend_arc, &ws.id, &module_dir, &cwd).await;
+        store_outputs(
+            &workspace,
+            &backend_arc,
+            &ws.id,
+            &ws.name,
+            &module_dir,
+            &cwd,
+        )
+        .await;
     }
 
     Ok(())
@@ -891,6 +912,7 @@ async fn store_outputs(
     workspace: &config::types::WorkspaceConfig,
     backend: &Arc<dyn StateBackend>,
     workspace_id: &str,
+    workspace_name: &str,
     path_module: &str,
     path_cwd: &str,
 ) {
@@ -917,7 +939,7 @@ async fn store_outputs(
                 path_module.to_string(),
                 path_module.to_string(),
                 path_cwd.to_string(),
-                workspace_id.to_string(),
+                workspace_name.to_string(),
             );
 
     println!();
@@ -1102,7 +1124,7 @@ async fn cmd_destroy(cli: &Cli, _targets: &[String], auto_approve: bool) -> Resu
     }
 
     let pm = Arc::new(provider_manager(&cli.working_dir));
-    let engine = engine_for_cli(cli, pm)?;
+    let engine = engine_for_cli(cli, pm, &ws.name)?;
 
     let run_id = backend
         .start_run(&ws.id, "destroy", resource_count as i32)
@@ -1332,7 +1354,7 @@ async fn cmd_import(cli: &Cli, command: &ImportCommands) -> Result<()> {
                 ))?;
 
             let pm = Arc::new(provider_manager(&cli.working_dir));
-            let engine = engine_for_cli(cli, pm)?;
+            let engine = engine_for_cli(cli, pm, &ws.name)?;
 
             // Use the provider's ImportResourceState RPC
             // For now, create a resource state entry with the provider ID
@@ -2057,7 +2079,7 @@ async fn cmd_blast_radius(
             .await?
             .context("No default workspace. Run 'oxid init' first.")?;
         let pm = Arc::new(provider_manager(&cli.working_dir));
-        let engine = engine_for_cli(cli, pm)?;
+        let engine = engine_for_cli(cli, pm, &ws.name)?;
         let plan = engine
             .plan(&workspace, &**b, &ws.id, true, &[], false)
             .await?;
@@ -2410,7 +2432,7 @@ async fn cmd_drift(cli: &Cli, refresh: bool) -> Result<()> {
     if refresh {
         println!("{}", "Refreshing state from providers...".dimmed());
         let pm = Arc::new(provider_manager(&cli.working_dir));
-        let engine = engine_for_cli(cli, pm)?;
+        let engine = engine_for_cli(cli, pm, &ws.name)?;
 
         // Initialize and configure providers (connect, get schema, configure with region/creds)
         engine.initialize_providers(&workspace).await?;
