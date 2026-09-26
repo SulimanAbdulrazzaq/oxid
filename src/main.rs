@@ -552,7 +552,7 @@ async fn cmd_init(cli: &Cli) -> Result<()> {
                     }
                 }
 
-                for (_name, (source, version_constraint)) in &providers_to_download {
+                for (source, version_constraint) in providers_to_download.values() {
                     let version = version_constraint.as_deref().unwrap_or(">= 0.0.0");
                     tracing::info!(
                         provider = %source,
